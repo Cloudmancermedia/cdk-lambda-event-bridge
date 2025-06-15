@@ -1,10 +1,12 @@
-import { Stack, StackProps } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
 import { Rule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
 import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
+import { Instance, InstanceType, InstanceClass, InstanceSize, AmazonLinuxImage, AmazonLinuxGeneration, Vpc } from 'aws-cdk-lib/aws-ec2';
+import { Schedule } from 'aws-cdk-lib/aws-events';
 
 export class CdkLambdaEventBridgeStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
@@ -17,6 +19,16 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
 
     const bucket = new Bucket(this, 'EventDemoBucket');
+
+    const vpc = Vpc.fromLookup(this, 'DefaultVPC', { isDefault: true });
+
+    const instance = new Instance(this, 'DemoInstance', {
+      vpc,
+      instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.MICRO),
+      machineImage: new AmazonLinuxImage({
+        generation: AmazonLinuxGeneration.AMAZON_LINUX_2,
+      }),
+    });
 
     lambdaFn.addPermission('AllowEventBridgeInvoke', {
       principal: new ServicePrincipal('events.amazonaws.com'),
@@ -48,6 +60,8 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
     loginRule.addTarget(new LambdaFunction(lambdaFn));
 
+  
+
     const ec2Rule = new Rule(this, 'EC2InstanceChangeRule', {
       eventPattern: {
         source: ['aws.ec2'],
@@ -58,5 +72,12 @@ export class CdkLambdaEventBridgeStack extends Stack {
       },
     });
     ec2Rule.addTarget(new LambdaFunction(lambdaFn));
+
+    // Scheduled Event: Once per minute
+    const cronRule = new Rule(this, 'ScheduledRule', {
+      schedule: Schedule.rate(Duration.minutes(2)),
+    });
+
+    cronRule.addTarget(new LambdaFunction(lambdaFn));
   }
 }
