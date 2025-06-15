@@ -60,8 +60,6 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
     loginRule.addTarget(new LambdaFunction(lambdaFn));
 
-  
-
     const ec2Rule = new Rule(this, 'EC2InstanceChangeRule', {
       eventPattern: {
         source: ['aws.ec2'],
@@ -73,11 +71,9 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
     ec2Rule.addTarget(new LambdaFunction(lambdaFn));
 
-    // Scheduled Event: Once per minute
     const cronRule = new Rule(this, 'ScheduledRule', {
       schedule: Schedule.rate(Duration.minutes(2)),
     });
-
     cronRule.addTarget(new LambdaFunction(lambdaFn));
   }
 }
