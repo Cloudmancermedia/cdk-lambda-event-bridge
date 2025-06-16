@@ -1,4 +1,4 @@
-import { Duration, Stack, StackProps } from 'aws-cdk-lib';
+import { Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
 import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
@@ -18,7 +18,10 @@ export class CdkLambdaEventBridgeStack extends Stack {
       code: Code.fromAsset('dist/lambda'),
     });
 
-    const bucket = new Bucket(this, 'EventDemoBucket');
+    const bucket = new Bucket(this, 'EventDemoBucket', {
+      removalPolicy: RemovalPolicy.DESTROY,
+      autoDeleteObjects: true,
+    });
 
     const vpc = Vpc.fromLookup(this, 'DefaultVPC', { isDefault: true });
 
@@ -44,9 +47,14 @@ export class CdkLambdaEventBridgeStack extends Stack {
     const s3Rule = new Rule(this, 'S3PutObjectRule', {
       eventPattern: {
         source: ['aws.s3'],
-        detailType: ['Object Created'],
+        detailType: ['Object Created', 'Object Deleted'],
         detail: {
           bucket: { name: [bucket.bucketName] },
+          reason: ['PutObject', 'DeleteObject'],
+          eventName: ['PutObject', 'DeleteObject'],
+          requestParameters: {
+            bucketName: [bucket.bucketName],
+          },
         },
       },
     });
@@ -56,7 +64,14 @@ export class CdkLambdaEventBridgeStack extends Stack {
       eventPattern: {
         source: ['aws.signin'],
         detailType: ['AWS Console Sign In via CloudTrail'],
-      },
+        detail: {
+          eventName: ["ConsoleLogin"],
+          eventType: ["AwsConsoleSignIn"],
+          responseElements: {
+            ConsoleLogin: ["Success"]
+          },
+        },
+      }
     });
     loginRule.addTarget(new LambdaFunction(lambdaFn));
 
@@ -65,15 +80,33 @@ export class CdkLambdaEventBridgeStack extends Stack {
         source: ['aws.ec2'],
         detailType: ['EC2 Instance State-change Notification'],
         detail: {
-          state: ['stopped', 'terminated'],
+          state: ['stopped', 'running'],
         },
       },
     });
     ec2Rule.addTarget(new LambdaFunction(lambdaFn));
 
-    const cronRule = new Rule(this, 'ScheduledRule', {
-      schedule: Schedule.rate(Duration.minutes(2)),
+    // const cronRule = new Rule(this, 'ScheduledRule', {
+    //   schedule: Schedule.rate(Duration.minutes(2)),
+    // });
+    // cronRule.addTarget(new LambdaFunction(lambdaFn));
+
+    lambdaFn.addPermission('AllowEventBridgeS3Invoke', {
+      principal: new ServicePrincipal('events.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
+      sourceArn: s3Rule.ruleArn,
     });
-    cronRule.addTarget(new LambdaFunction(lambdaFn));
+
+    // lambdaFn.addPermission('AllowEventBridgeLoginInvoke', {
+    //   principal: new ServicePrincipal('events.amazonaws.com'),
+    //   action: 'lambda:InvokeFunction',
+    //   sourceArn: loginRule.ruleArn,
+    // });
+
+    // lambdaFn.addPermission('AllowEventBridgeEC2Invoke', {
+    //   principal: new ServicePrincipal('events.amazonaws.com'),
+    //   action: 'lambda:InvokeFunction',
+    //   sourceArn: ec2Rule.ruleArn,
+    // });
   }
 }
