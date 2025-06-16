@@ -1,31 +1,34 @@
-import { Duration, RemovalPolicy, Stack, StackProps } from 'aws-cdk-lib';
+import { Duration, Stack, StackProps } from 'aws-cdk-lib';
 import { Construct } from 'constructs';
-import { Bucket } from 'aws-cdk-lib/aws-s3';
 import { Function, Runtime, Code } from 'aws-cdk-lib/aws-lambda';
 import { Rule } from 'aws-cdk-lib/aws-events';
 import { LambdaFunction } from 'aws-cdk-lib/aws-events-targets';
-import { Effect, PolicyStatement, ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 import { Instance, InstanceType, InstanceClass, InstanceSize, AmazonLinuxImage, AmazonLinuxGeneration, Vpc } from 'aws-cdk-lib/aws-ec2';
 import { Schedule } from 'aws-cdk-lib/aws-events';
+import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
+import { Project, LinuxBuildImage, BuildSpec } from 'aws-cdk-lib/aws-codebuild';
+import { Role, ServicePrincipal, ManagedPolicy } from 'aws-cdk-lib/aws-iam';
 
 export class CdkLambdaEventBridgeStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
     super(scope, id, props);
 
+    // Lambda Function
     const lambdaFn = new Function(this, 'EventDemoLambda', {
       runtime: Runtime.NODEJS_22_X,
       handler: 'handler.main',
       code: Code.fromAsset('dist/lambda'),
     });
-
-    const bucket = new Bucket(this, 'EventDemoBucket', {
-      removalPolicy: RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
+    // Grant EventBridge permission to invoke the Lambda function
+    lambdaFn.addPermission('AllowEventBridgeInvoke', {
+      principal: new ServicePrincipal('events.amazonaws.com'),
+      action: 'lambda:InvokeFunction',
     });
 
+    // EC2 Instance
     const vpc = Vpc.fromLookup(this, 'DefaultVPC', { isDefault: true });
 
-    const instance = new Instance(this, 'DemoInstance', {
+    new Instance(this, 'DemoInstance', {
       vpc,
       instanceType: InstanceType.of(InstanceClass.T3, InstanceSize.MICRO),
       machineImage: new AmazonLinuxImage({
@@ -33,48 +36,56 @@ export class CdkLambdaEventBridgeStack extends Stack {
       }),
     });
 
-    lambdaFn.addPermission('AllowEventBridgeInvoke', {
-      principal: new ServicePrincipal('events.amazonaws.com'),
-      action: 'lambda:InvokeFunction',
-    });
-
-    lambdaFn.addToRolePolicy(new PolicyStatement({
-      actions: ['s3:GetObject'],
-      resources: [`${bucket.bucketArn}/*`],
-      effect: Effect.ALLOW,
-    }));
-
-    const s3Rule = new Rule(this, 'S3PutObjectRule', {
-      eventPattern: {
-        source: ['aws.s3'],
-        detailType: ['Object Created', 'Object Deleted'],
-        detail: {
-          bucket: { name: [bucket.bucketName] },
-          reason: ['PutObject', 'DeleteObject'],
-          eventName: ['PutObject', 'DeleteObject'],
-          requestParameters: {
-            bucketName: [bucket.bucketName],
-          },
-        },
+    // CloudWatch Alarm
+    const customMetric = new Metric({
+      namespace: 'DemoNamespace',
+      metricName: 'DemoErrorCount',
+      dimensionsMap: {
+        Environment: 'Test'
       },
+      period: Duration.minutes(1),
+      statistic: 'Sum'
     });
-    s3Rule.addTarget(new LambdaFunction(lambdaFn));
 
-    const loginRule = new Rule(this, 'ConsoleLoginRule', {
-      eventPattern: {
-        source: ['aws.signin'],
-        detailType: ['AWS Console Sign In via CloudTrail'],
-        detail: {
-          eventName: ["ConsoleLogin"],
-          eventType: ["AwsConsoleSignIn"],
-          responseElements: {
-            ConsoleLogin: ["Success"]
-          },
-        },
-      }
+    const demoAlarm = new Alarm(this, 'DemoAlarm', {
+      metric: customMetric,
+      threshold: 1,
+      evaluationPeriods: 1,
+      comparisonOperator: ComparisonOperator.GREATER_THAN_THRESHOLD,
+      treatMissingData: TreatMissingData.NOT_BREACHING,
+      alarmDescription: 'Triggers when DemoErrorCount > 1'
     });
-    loginRule.addTarget(new LambdaFunction(lambdaFn));
 
+    // CodeBuild Project
+    const codebuildRole = new Role(this, 'CodeBuildServiceRole', {
+      assumedBy: new ServicePrincipal('codebuild.amazonaws.com'),
+      managedPolicies: [
+        ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
+        ManagedPolicy.fromAwsManagedPolicyName('CloudWatchLogsFullAccess')
+      ]
+    });
+
+    const codebuildProject = new Project(this, 'DemoCodeBuildProject', {
+      projectName: 'EventBridgeCodeBuildDemo',
+      role: codebuildRole,
+      environment: {
+        buildImage: LinuxBuildImage.STANDARD_7_0,
+      },
+      buildSpec: BuildSpec.fromObject({
+        version: '0.2',
+        phases: {
+          build: {
+            commands: [
+              'echo "This is a demo CodeBuild run."',
+              'exit 1',  // Fail state
+              // 'exit 0',  // Success state
+            ]
+          }
+        }
+      })
+    });
+
+    // Rule #1: EC2 Instance State Change
     const ec2Rule = new Rule(this, 'EC2InstanceChangeRule', {
       eventPattern: {
         source: ['aws.ec2'],
@@ -86,27 +97,38 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
     ec2Rule.addTarget(new LambdaFunction(lambdaFn));
 
-    // const cronRule = new Rule(this, 'ScheduledRule', {
-    //   schedule: Schedule.rate(Duration.minutes(2)),
-    // });
-    // cronRule.addTarget(new LambdaFunction(lambdaFn));
-
-    lambdaFn.addPermission('AllowEventBridgeS3Invoke', {
-      principal: new ServicePrincipal('events.amazonaws.com'),
-      action: 'lambda:InvokeFunction',
-      sourceArn: s3Rule.ruleArn,
+    // Rule #2: CloudWatch Alarm State Change
+    const alarmRule = new Rule(this, 'CloudWatchAlarmRule', {
+      eventPattern: {
+        source: ['aws.cloudwatch'],
+        detailType: ['CloudWatch Alarm State Change'],
+        detail: {
+          state: {
+            value: ['ALARM', 'OK']
+          },
+          alarmName: [demoAlarm.alarmName] 
+        }
+      }
     });
+    alarmRule.addTarget(new LambdaFunction(lambdaFn));
 
-    // lambdaFn.addPermission('AllowEventBridgeLoginInvoke', {
-    //   principal: new ServicePrincipal('events.amazonaws.com'),
-    //   action: 'lambda:InvokeFunction',
-    //   sourceArn: loginRule.ruleArn,
-    // });
+    // Rule #3: CodeBuild Project State Change
+    const codeBuildRule = new Rule(this, 'CodeBuildStatusChangeRule', {
+      eventPattern: {
+        source: ['aws.codebuild'],
+        detailType: ['CodeBuild Build State Change'],
+        detail: {
+          buildStatus: ['SUCCEEDED', 'FAILED'],
+          projectName: [codebuildProject.projectName]
+        }
+      }
+    });
+    codeBuildRule.addTarget(new LambdaFunction(lambdaFn));
 
-    // lambdaFn.addPermission('AllowEventBridgeEC2Invoke', {
-    //   principal: new ServicePrincipal('events.amazonaws.com'),
-    //   action: 'lambda:InvokeFunction',
-    //   sourceArn: ec2Rule.ruleArn,
-    // });
+    // Rule #4: Scheduled Cron Job
+    const cronRule = new Rule(this, 'ScheduledRule', {
+      schedule: Schedule.rate(Duration.minutes(5)),
+    });
+    cronRule.addTarget(new LambdaFunction(lambdaFn));
   }
 }
