@@ -57,17 +57,8 @@ export class CdkLambdaEventBridgeStack extends Stack {
     });
 
     // CodeBuild Project
-    const codebuildRole = new Role(this, 'CodeBuildServiceRole', {
-      assumedBy: new ServicePrincipal('codebuild.amazonaws.com'),
-      managedPolicies: [
-        ManagedPolicy.fromAwsManagedPolicyName('AmazonS3ReadOnlyAccess'),
-        ManagedPolicy.fromAwsManagedPolicyName('CloudWatchLogsFullAccess')
-      ]
-    });
-
     const codebuildProject = new Project(this, 'DemoCodeBuildProject', {
       projectName: 'EventBridgeCodeBuildDemo',
-      role: codebuildRole,
       environment: {
         buildImage: LinuxBuildImage.STANDARD_7_0,
       },
@@ -118,8 +109,8 @@ export class CdkLambdaEventBridgeStack extends Stack {
         source: ['aws.codebuild'],
         detailType: ['CodeBuild Build State Change'],
         detail: {
-          buildStatus: ['SUCCEEDED', 'FAILED'],
-          projectName: [codebuildProject.projectName]
+          'build-status': ['SUCCEEDED', 'FAILED'],
+          'project-name': [codebuildProject.projectName]
         }
       }
     });
