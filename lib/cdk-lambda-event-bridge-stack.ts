@@ -7,7 +7,7 @@ import { Instance, InstanceType, InstanceClass, InstanceSize, AmazonLinuxImage, 
 import { Schedule } from 'aws-cdk-lib/aws-events';
 import { Alarm, ComparisonOperator, Metric, TreatMissingData } from 'aws-cdk-lib/aws-cloudwatch';
 import { Project, LinuxBuildImage, BuildSpec } from 'aws-cdk-lib/aws-codebuild';
-import { Role, ServicePrincipal, ManagedPolicy } from 'aws-cdk-lib/aws-iam';
+import { ServicePrincipal } from 'aws-cdk-lib/aws-iam';
 
 export class CdkLambdaEventBridgeStack extends Stack {
   constructor(scope: Construct, id: string, props?: StackProps) {
